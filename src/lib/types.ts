@@ -14,6 +14,10 @@ export interface Project {
 export interface ApiKey {
   id: number;
   project_id: number;
-  key_value: string;
+  key_prefix: string;
   created_at: string;
+}
+
+export interface ApiKeyCreated extends ApiKey {
+  key_value: string;
 }

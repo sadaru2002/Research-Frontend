@@ -1,4 +1,10 @@
-import type { ApiKey, Credentials, Project, User } from "./types";
+import type {
+  ApiKey,
+  ApiKeyCreated,
+  Credentials,
+  Project,
+  User,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -62,7 +68,7 @@ export const api = {
   project: (id: number) => request<Project>(`/projects/${id}`),
   keys: (id: number) => request<ApiKey[]>(`/projects/${id}/api-keys`),
   generateKey: (id: number) =>
-    request<ApiKey>(`/projects/${id}/api-keys`, { method: "POST" }),
+    request<ApiKeyCreated>(`/projects/${id}/api-keys`, { method: "POST" }),
   revokeKey: (projectId: number, keyId: number) =>
     request<void>(`/projects/${projectId}/api-keys/${keyId}`, {
       method: "DELETE",

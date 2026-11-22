@@ -17,8 +17,10 @@ const apiKey = {
   id: 11,
   project_id: 7,
   key_value: "rk_test-secret-for-project-seven",
+  key_prefix: "rk_test-sec",
   created_at: project.created_at,
 };
+const { key_value: secret, ...keyMetadata } = apiKey;
 
 function response(body: unknown, status = 200) {
   return new Response(status === 204 ? null : JSON.stringify(body), {
@@ -81,7 +83,7 @@ describe("developer portal integration", () => {
     expect(window.localStorage.length).toBe(0);
   });
 
-  it("creates a project, generates and reveals a key, then revokes it", async () => {
+  it("creates a project, shows a key once without caching it, then revokes it", async () => {
     let created = false;
     let generated = false;
     let revoked = false;
@@ -103,7 +105,7 @@ describe("developer portal integration", () => {
         return response(apiKey, 201);
       }
       if (url.endsWith("/api-keys") && method === "GET")
-        return response(generated && !revoked ? [apiKey] : []);
+        return response(generated && !revoked ? [keyMetadata] : []);
       if (url.endsWith("/api-keys/11") && method === "DELETE") {
         revoked = true;
         return response(null, 204);
@@ -111,7 +113,7 @@ describe("developer portal integration", () => {
       throw new Error(`Unexpected request ${method} ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
-    mount();
+    const client = mount();
     const user = userEvent.setup();
     await user.click(
       await screen.findByRole("button", { name: "New project" }),
@@ -130,10 +132,35 @@ describe("developer portal integration", () => {
     );
     await user.click(screen.getByRole("button", { name: "Generate API key" }));
     await screen.findByText("Project key #11");
-    expect(screen.queryByText(apiKey.key_value)).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Reveal key 11" }));
-    expect(screen.getByText(apiKey.key_value)).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Hide key 11" }));
+    expect(screen.getByText(secret)).toBeVisible();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+    await user.click(screen.getByRole("button", { name: "Copy new API key" }));
+    expect(writeText).toHaveBeenCalledWith(secret);
+    expect(
+      screen.queryByRole("button", { name: "Reveal key 11" }),
+    ).not.toBeInTheDocument();
+    expect(
+      JSON.stringify(
+        client
+          .getQueryCache()
+          .getAll()
+          .map((q) => q.state.data),
+      ),
+    ).not.toContain(secret);
+    expect(
+      JSON.stringify(
+        client
+          .getMutationCache()
+          .getAll()
+          .map((m) => m.state.data),
+      ),
+    ).not.toContain(secret);
+    await user.click(
+      screen.getByRole("button", { name: "I've saved this key" }),
+    );
+    expect(screen.queryByText(secret)).not.toBeInTheDocument();
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
     await user.click(screen.getByRole("button", { name: "Revoke key 11" }));
     await user.click(screen.getByRole("button", { name: "Revoke key" }));
     expect(
@@ -149,20 +176,55 @@ describe("developer portal integration", () => {
         if (url.endsWith("/auth/me")) return response(account);
         if (url.endsWith("/auth/logout")) return response(null, 204);
         if (url.endsWith("/projects/7")) return response(project);
-        if (url.endsWith("/api-keys")) return response([apiKey]);
+        if (url.endsWith("/api-keys")) return response([keyMetadata]);
         throw new Error(`Unexpected request ${url}`);
       }),
     );
     const client = mount("/projects/7");
     const user = userEvent.setup();
     await screen.findByText("Project key #11");
-    await user.click(screen.getByRole("button", { name: "Reveal key 11" }));
+    expect(screen.queryByText(secret)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Reveal key 11" }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     expect(
       await screen.findByRole("heading", { name: "Welcome back." }),
     ).toBeVisible();
     expect(screen.queryByText(apiKey.key_value)).not.toBeInTheDocument();
     expect(client.getQueryCache().getAll()).toHaveLength(0);
+  });
+
+  it("does not recover a dismissed creation secret after leaving and reopening a project", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, options?: RequestInit) => {
+        if (url.endsWith("/auth/me")) return response(account);
+        if (url.endsWith("/projects")) return response([project]);
+        if (url.endsWith("/projects/7")) return response(project);
+        if (url.endsWith("/api-keys"))
+          return options?.method === "POST"
+            ? response(apiKey, 201)
+            : response([keyMetadata]);
+        throw new Error(`Unexpected request ${url}`);
+      }),
+    );
+    mount("/projects/7");
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Generate API key" }),
+    );
+    expect(await screen.findByText(secret)).toBeVisible();
+    await user.click(screen.getByRole("link", { name: "All projects" }));
+    expect(screen.queryByText(secret)).not.toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("link", { name: new RegExp(project.name) }),
+    );
+    await screen.findByText("Project key #11");
+    expect(screen.queryByText(secret)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Copy new API key" }),
+    ).not.toBeInTheDocument();
   });
 
   it("returns to login when a protected request reports an expired session", async () => {

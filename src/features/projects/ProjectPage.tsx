@@ -1,18 +1,9 @@
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  ArrowLeft,
-  Check,
-  Copy,
-  Eye,
-  EyeOff,
-  KeyRound,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { ArrowLeft, Check, Copy, KeyRound, Plus, Trash2 } from "lucide-react";
 import { api } from "../../lib/api";
-import type { ApiKey } from "../../lib/types";
+import type { ApiKey, ApiKeyCreated } from "../../lib/types";
 import { date, ErrorMessage, Loading } from "../../components/Status";
 import { SetupCode } from "./SetupCode";
 
@@ -20,26 +11,36 @@ export function ProjectPage() {
   const { projectId } = useParams();
   const id = Number(projectId);
   const valid = Number.isSafeInteger(id) && id > 0;
+  if (!valid) return <ErrorMessage message="Invalid project address." />;
+  // A different project gets fresh component state, including pending mutations.
+  return <ProjectWorkspace key={id} id={id} />;
+}
+
+function ProjectWorkspace({ id }: { id: number }) {
   const cache = useQueryClient();
   const project = useQuery({
     queryKey: ["project", id],
     queryFn: () => api.project(id),
-    enabled: valid,
   });
   const keys = useQuery({
     queryKey: ["keys", id],
     queryFn: () => api.keys(id),
-    enabled: valid && project.isSuccess,
+    enabled: project.isSuccess,
   });
   const [notice, setNotice] = useState("");
+  const [createdKey, setCreatedKey] = useState<ApiKeyCreated | null>(null);
   const generate = useMutation({
-    mutationFn: () => api.generateKey(id),
+    // Keep the creation secret in component memory, not the shared mutation cache.
+    mutationFn: async () => {
+      const key = await api.generateKey(id);
+      setCreatedKey(key);
+    },
+    gcTime: 0,
     onSuccess: async () => {
       await cache.invalidateQueries({ queryKey: ["keys", id] });
-      setNotice("API key generated. Reveal or copy it below.");
+      setNotice("API key generated. Copy it now; it cannot be shown again.");
     },
   });
-  if (!valid) return <ErrorMessage message="Invalid project address." />;
   if (project.isPending) return <Loading />;
   if (project.isError)
     return (
@@ -106,6 +107,13 @@ export function ProjectPage() {
           Treat API keys like passwords. Use them in server-side code and
           environment variables.
         </div>
+        {createdKey?.project_id === id && (
+          <NewKeyNotice
+            key={createdKey.id}
+            value={createdKey.key_value}
+            onDismiss={() => setCreatedKey(null)}
+          />
+        )}
         {keys.isPending ? (
           <Loading label="Loading API keys…" />
         ) : keys.isError ? (
@@ -127,7 +135,13 @@ export function ProjectPage() {
         ) : (
           <div className="key-list">
             {keys.data.map((key) => (
-              <KeyRow key={key.id} apiKey={key} />
+              <KeyRow
+                key={key.id}
+                apiKey={key}
+                onRevoked={() => {
+                  if (createdKey?.id === key.id) setCreatedKey(null);
+                }}
+              />
             ))}
           </div>
         )}
@@ -144,56 +158,72 @@ export function ProjectPage() {
   );
 }
 
-function KeyRow({ apiKey }: { apiKey: ApiKey }) {
-  const [visible, setVisible] = useState(false);
+function NewKeyNotice({
+  value,
+  onDismiss,
+}: {
+  value: string;
+  onDismiss: () => void;
+}) {
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
-  const [confirm, setConfirm] = useState(false);
-  const cache = useQueryClient();
-  const revoke = useMutation({
-    mutationFn: () => api.revokeKey(apiKey.project_id, apiKey.id),
-    onSuccess: () =>
-      cache.invalidateQueries({ queryKey: ["keys", apiKey.project_id] }),
-  });
   async function copy() {
     setError("");
     try {
-      await navigator.clipboard.writeText(apiKey.key_value);
+      await navigator.clipboard.writeText(value);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
       setError(
-        "Clipboard access is unavailable. Reveal the key and copy it manually.",
+        "Clipboard access is unavailable. Select the key and copy it manually.",
       );
     }
   }
+  return (
+    <div className="key-notice" role="region" aria-label="New API key">
+      <p>
+        Copy this key now. After you dismiss this message or leave this page, it
+        cannot be recovered.
+      </p>
+      <code className="key-value">{value}</code>
+      <div className="key-actions">
+        <button className="button secondary" onClick={() => void copy()}>
+          {copied ? <Check size={18} /> : <Copy size={18} />}
+          {copied ? "Key copied" : "Copy new API key"}
+        </button>
+        <button className="button secondary" onClick={onDismiss}>
+          I've saved this key
+        </button>
+      </div>
+      <ErrorMessage message={error} />
+    </div>
+  );
+}
+
+function KeyRow({
+  apiKey,
+  onRevoked,
+}: {
+  apiKey: ApiKey;
+  onRevoked: () => void;
+}) {
+  const [confirm, setConfirm] = useState(false);
+  const cache = useQueryClient();
+  const revoke = useMutation({
+    mutationFn: () => api.revokeKey(apiKey.project_id, apiKey.id),
+    onSuccess: async () => {
+      onRevoked();
+      await cache.invalidateQueries({ queryKey: ["keys", apiKey.project_id] });
+    },
+  });
   return (
     <div className="key-row">
       <div className="key-meta">
         <strong>Project key #{apiKey.id}</strong>
         <span>Created {date(apiKey.created_at)}</span>
       </div>
-      <code className="key-value">
-        {visible
-          ? apiKey.key_value
-          : `${apiKey.key_value.slice(0, 7)}${"•".repeat(24)}`}
-      </code>
+      <code className="key-value">{apiKey.key_prefix}…</code>
       <div className="key-actions">
-        <button
-          className="icon-button"
-          aria-label={`${visible ? "Hide" : "Reveal"} key ${apiKey.id}`}
-          aria-pressed={visible}
-          onClick={() => setVisible(!visible)}
-        >
-          {visible ? <EyeOff size={18} /> : <Eye size={18} />}
-        </button>
-        <button
-          className="icon-button"
-          aria-label={`Copy key ${apiKey.id}`}
-          onClick={() => void copy()}
-        >
-          {copied ? <Check size={18} /> : <Copy size={18} />}
-        </button>
         <button
           className="icon-button danger"
           aria-label={`Revoke key ${apiKey.id}`}
@@ -202,8 +232,7 @@ function KeyRow({ apiKey }: { apiKey: ApiKey }) {
           <Trash2 size={18} />
         </button>
       </div>
-      {copied && <small role="status">Key copied</small>}
-      <ErrorMessage message={error || revoke.error?.message} />
+      <ErrorMessage message={revoke.error?.message} />
       {confirm && (
         <div className="revoke-confirm">
           <span>Revoke this key? Applications using it will lose access.</span>
